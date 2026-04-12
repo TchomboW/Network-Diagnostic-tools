@@ -1,0 +1,13 @@
+# Go build outputs
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+
+# IDE/editor files
+.DS_Store
+
+# TUI app binaries
+network_tool
+network_tool_test
