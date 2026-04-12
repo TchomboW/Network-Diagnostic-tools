@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Network Monitoring Tool
 
 A comprehensive network monitoring tool built in Go with a terminal user interface (TUI). This tool performs real-time network diagnostics including ICMP ping, speed tests, DNS resolution, TCP latency, and HTTP time-to-first-byte (TTFB) measurements.
@@ -23,8 +24,8 @@ A comprehensive network monitoring tool built in Go with a terminal user interfa
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/networktools.git
-   cd networktools
+   git clone https://github.com/TchomboW/Network-Diagnostic-tools.git
+   cd Network-Diagnostic-tools
    ```
 
 2. Install dependencies:
