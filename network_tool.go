@@ -18,6 +18,7 @@ import (
 	"github.com/rivo/tview"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
+	"golang.org/x/term"
 )
 
 type AppState struct {
@@ -589,6 +590,11 @@ func (e *MonitorEngine) runCycle() (NetworkMetrics, error) {
 }
 
 func main() {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		fmt.Println("This application requires an interactive terminal. Please run in a terminal emulator.")
+		os.Exit(1)
+	}
+
 	app := tview.NewApplication()
 	mainPage := tview.NewFlex().SetDirection(tview.FlexRow)
 	header := tview.NewTextView().SetTextAlign(tview.AlignCenter).SetText("Network Monitoring Dashboard")
