@@ -785,11 +785,44 @@ func main() {
 				// Note: In a real app, we might want to restart the engine itself
 			case <-reportChan:
 				app.QueueUpdateDraw(func() {
+					report := "[cyan]REPORT:\n"
 					if lastMetrics.issueDetected {
-						fmt.Fprintf(logView, "[cyan]REPORT: Issue detected - %s. Download %.2f Mbps, upload %.2f Mbps, zscaler %v, dns %v.\n", lastMetrics.issueSummary, lastMetrics.downloadSpeed, lastMetrics.uploadSpeed, lastMetrics.zscalerLatency, lastMetrics.dnsTime)
+						report += fmt.Sprintf("- Issue detected: %s\n", lastMetrics.issueSummary)
 					} else {
-						fmt.Fprintf(logView, "[cyan]REPORT: No issue detected. Network is stable.\n")
+						report += "- No issue detected. Network appears stable.\n"
 					}
+					report += fmt.Sprintf("- Target: %s\n", monitor.GetTarget())
+					report += fmt.Sprintf("- Latency: %v\n", lastMetrics.latency)
+					report += fmt.Sprintf("- Jitter: %.1f ms\n", lastMetrics.jitter)
+					report += fmt.Sprintf("- Packet loss: %.1f%%\n", lastMetrics.loss)
+					report += fmt.Sprintf("- TCP latency (443): %v\n", lastMetrics.tcpLatency)
+					if lastMetrics.httpTTFB > 0 {
+						report += fmt.Sprintf("- HTTP TTFB: %v\n", lastMetrics.httpTTFB)
+					} else {
+						report += "- HTTP TTFB: N/A\n"
+					}
+					report += fmt.Sprintf("- Download: %.2f Mbps\n", lastMetrics.downloadSpeed)
+					report += fmt.Sprintf("- Upload: %.2f Mbps\n", lastMetrics.uploadSpeed)
+					report += fmt.Sprintf("- Baseline DL: %.2f Mbps, UL: %.2f Mbps\n", monitor.GetBaselineDown(), monitor.GetBaselineUp())
+					if lastMetrics.zscalerLatency > 0 {
+						report += fmt.Sprintf("- Zscaler latency: %v\n", lastMetrics.zscalerLatency)
+					} else {
+						report += "- Zscaler latency: N/A\n"
+					}
+					report += fmt.Sprintf("- DNS lookup: %v\n", lastMetrics.dnsTime)
+					if len(lastMetrics.errors) > 0 {
+						report += "- Recent errors:\n"
+						for i, errStr := range lastMetrics.errors {
+							if i >= 5 {
+								break
+							}
+							report += fmt.Sprintf("  %d. %s\n", i+1, errStr)
+						}
+					} else {
+						report += "- Recent errors: none\n"
+					}
+					report += "[white]"
+					fmt.Fprint(logView, report)
 				})
 			}
 		}
