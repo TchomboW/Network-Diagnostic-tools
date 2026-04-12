@@ -11,3 +11,9 @@
 # TUI app binaries
 network_tool
 network_tool_test
+
+# macOS metadata
+.DS_Store
+
+# Project metadata / temporary state
+project_state.json
