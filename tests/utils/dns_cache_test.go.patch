@@ -1,0 +1,44 @@
+// TestExpiredEntriesAreRemoved tests that expired entries are automatically excluded from GetAllCaches
+func TestExpiredEntriesAreRemoved(t *testing.T) {
+	cache := NewDNSCache()
+	
+	// Manually add an entry with 0 TTL (expires immediately) - this should not appear in GetAllCaches
+	entry := &DNSCacheEntry{
+		IP:        "127.0.0.1",
+		TTL:       time.Duration(0), // Expires immediately
+		Timestamp: time.Now(),
+	}
+	cache.mu.Lock()
+	cache.entries["expired.host"] = entry
+	cache.mu.Unlock()
+
+	// Verify it's NOT in the cache initially because TTL=0 expires immediately
+	allCaches := cache.GetAllCaches()
+	if len(allCaches) != 0 {
+		t.Errorf("Expected 0 entries (TTL=0 expires immediately), got %d", len(allCaches))
+	}
+
+	// Add a valid entry that will expire
+	cache.mu.Lock()
+	cache.entries["valid.host"] = &DNSCacheEntry{
+		IP:        "127.0.0.2",
+		TTL:       5 * time.Millisecond, // Very short TTL for testing
+		Timestamp: time.Now(),
+	}
+	cache.mu.Unlock()
+
+	// Verify it's in the cache initially with valid entry
+	allCaches = cache.GetAllCaches()
+	if len(allCaches) != 1 {
+		t.Errorf("Expected 1 entry, got %d", len(allCaches))
+	}
+
+	// After a short delay, verify it's no longer in GetAllCaches (expired entries excluded)
+	time.Sleep(10 * time.Millisecond) // Give time for expiration
+	allCaches = cache.GetAllCaches()
+	if len(allCaches) != 0 {
+		t.Errorf("Expected 0 non-expired entries after expiration, got %d", len(allCaches))
+	}
+
+	t.Log("✓ TestExpiredEntriesAreRemoved passed: Expired entries are not returned by GetAllCaches")
+}
