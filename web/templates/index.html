@@ -1,0 +1,64 @@
+{{define "index.html"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Network Monitor</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>Network Monitoring Dashboard</h1>
+            <div class="controls">
+                <label for="target">Target:</label>
+                <input type="text" id="target" name="target" value="{{.Target}}" placeholder="8.8.8.8">
+                <button hx-post="/api/set-target" 
+                        hx-swap="none" 
+                        hx-include="#target"
+                        hx-vals='{"target": document.getElementById("target").value}'>
+                    Set
+                </button>
+                <button id="pause-btn" 
+                        hx-post="/api/toggle-pause" 
+                        hx-swap="none"
+                        hx-target="#pause-btn"
+                        hx-indicator="#pause-btn">
+                    Pause
+                </button>
+            </div>
+        </header>
+
+        <div class="metrics-grid" 
+             hx-get="/api/metrics" 
+             hx-trigger="load, every 5s"
+             hx-swap="innerHTML">
+            <!-- Metrics will be rendered here -->
+        </div>
+
+        <div class="charts">
+            <div class="chart-container">
+                <h3>Latency History</h3>
+                <canvas id="latencyChart"></canvas>
+            </div>
+            <div class="chart-container">
+                <h3>Speed History</h3>
+                <canvas id="speedChart"></canvas>
+            </div>
+        </div>
+
+        <div class="logs" id="event-log">
+            <h3>Event Log</h3>
+            <div id="log-content">
+                <p>Monitoring started...</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
+{{end}}

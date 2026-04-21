@@ -590,6 +590,13 @@ func (e *MonitorEngine) runCycle() (NetworkMetrics, error) {
 }
 
 func main() {
+	// Check for --web flag
+	if len(os.Args) > 1 && os.Args[1] == "--web" {
+		server := NewWebServer(":8080")
+		server.Start()
+		return
+	}
+
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		fmt.Println("This application requires an interactive terminal. Please run in a terminal emulator.")
 		os.Exit(1)
