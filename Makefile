@@ -4,7 +4,7 @@
 GO=go
 BUILD_DIR=bin
 BINARY_NAME=network_tool
-TARGET_FILE=network_tool.go
+MAIN_PACKAGE=./cmd
 
 .PHONY: all build test clean run help
 
@@ -14,7 +14,7 @@ all: build
 build:
 	@echo "Building $(BINARY_NAME)..."
 	@mkdir -p $(BUILD_DIR)
-	$(GO) build -o $(BUILD_DIR)/$(BINARY_NAME) $(TARGET_FILE)
+	$(GO) build -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PACKAGE)
 	@echo "Build complete: $(BUILD_DIR)/$(BINARY_NAME)"
 
 ## run: Run the tool (requires sudo for ICMP/Raw Sockets)
