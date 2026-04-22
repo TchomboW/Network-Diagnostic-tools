@@ -1,7 +1,46 @@
-<<<<<<< HEAD
-# Network Monitoring Tool
+# Network Diagnostic Tools
 
-A comprehensive network monitoring tool built in Go with a terminal user interface (TUI). This tool performs real-time network diagnostics including ICMP ping, speed tests, DNS resolution, TCP latency, and HTTP time-to-first-byte (TTFB) measurements.
+A comprehensive network diagnostic tool built in Go with a terminal user interface (TUI). This tool performs real-time network diagnostics including ICMP ping, speed tests, DNS resolution, TCP latency, and HTTP time-to-first-byte (TTFB) measurements.
+
+## Download Pre-built Binaries
+
+Choose the binary that matches your platform:
+
+| Platform | Architecture | Download |
+|----------|-------------|----------|
+| macOS | Apple Silicon (M1/M2/M3/M4) | [network_tool-darwin-arm64.zip](https://github.com/TchomboW/Network-Diagnostic-tools/releases/download/v0.1.0/network_tool-darwin-arm64.zip) |
+| macOS | Intel (x86_64) | [network_tool-darwin-amd64.zip](https://github.com/TchomboW/Network-Diagnostic-tools/releases/download/v0.1.0/network_tool-darwin-amd64.zip) |
+| Windows | x86_64 | [network_tool-windows-amd64.exe](https://github.com/TchomboW/Network-Diagnostic-tools/releases/download/v0.1.0/network_tool-windows-amd64.zip) |
+| Linux | x86_64 | [network_tool-linux-amd64.tar.gz](https://github.com/TchomboW/Network-Diagnostic-tools/releases/download/v0.1.0/network_tool-linux-amd64.tar.gz) |
+| Linux | ARM64 | [network_tool-linux-arm64.tar.gz](https://github.com/TchomboW/Network-Diagnostic-tools/releases/download/v0.1.0/network_tool-linux-arm64.tar.gz) |
+
+### macOS Quick Start
+
+```bash
+# Download and extract
+curl -L -o network_tool.zip https://github.com/TchomboW/Network-Diagnostic-tools/releases/download/v0.1.0/network_tool-darwin-arm64.zip
+unzip network_tool.zip
+
+# Remove quarantine attribute (required for macOS)
+xattr -d com.apple.quarantine network_tool-darwin-arm64
+
+# Run
+./network_tool-darwin-arm64
+```
+
+### Linux Quick Start
+
+```bash
+# Download and extract
+curl -L -o network_tool.tar.gz https://github.com/TchomboW/Network-Diagnostic-tools/releases/download/v0.1.0/network_tool-linux-amd64.tar.gz
+tar xzf network_tool.tar.gz
+
+# Make executable
+chmod +x network_tool-linux-amd64
+
+# Run
+./network_tool-linux-amd64
+```
 
 ## Features
 
@@ -16,11 +55,11 @@ A comprehensive network monitoring tool built in Go with a terminal user interfa
 
 ## Requirements
 
-- Go 1.19 or later
+- Go 1.19 or later (for building from source)
 - Linux, macOS, or Windows
 - ICMP privileges (may require running as root/admin on some systems)
 
-## Installation
+## Installation from Source
 
 1. Clone the repository:
    ```bash
@@ -35,7 +74,7 @@ A comprehensive network monitoring tool built in Go with a terminal user interfa
 
 3. Build the application:
    ```bash
-   go build
+   go build -tags tui -o network_tool ./cmd/tui
    ```
 
 ## Usage
