@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -451,6 +452,7 @@ type MonitorEngine struct {
 	monitor         *NetworkMonitor
 	state           *AppState
 	events          chan MonitorEvent
+	listeners       []chan MonitorEvent
 	stop            chan struct{}
 	lastSpeedTest   time.Time
 	lastDownload    float64
@@ -462,9 +464,15 @@ func NewMonitorEngine(m *NetworkMonitor, s *AppState) *MonitorEngine {
 		monitor:       m,
 		state:         s,
 		events:        make(chan MonitorEvent, 10),
+		listeners:     make([]chan MonitorEvent, 0),
 		stop:          make(chan struct{}),
 		lastSpeedTest: time.Now().Add(-61 * time.Second), // run immediately on first cycle
 	}
+}
+
+// AddListener adds a listener channel for broadcasting events.
+func (e *MonitorEngine) AddListener(ch chan MonitorEvent) {
+	e.listeners = append(e.listeners, ch)
 }
 
 func (e *MonitorEngine) Start() {
@@ -477,8 +485,22 @@ func (e *MonitorEngine) Start() {
 				if e.state.IsPaused() {
 					continue
 				}
-				metrics, err := e.runCycle()
-				e.events <- MonitorEvent{Metrics: metrics, Error: err}
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("[engine] panic in runCycle: %v", r)
+						}
+					}()
+					metrics, err := e.runCycle()
+					event := MonitorEvent{Metrics: metrics, Error: err}
+					// Broadcast to all listeners
+					for _, ch := range e.listeners {
+						select {
+						case ch <- event:
+						default:
+						}
+					}
+				}()
 			case <-e.stop:
 				return
 			}
@@ -498,21 +520,23 @@ func (e *MonitorEngine) runCycle() (NetworkMetrics, error) {
 	// DNS Resolution
 	dnsTime, err := e.monitor.testDNSResolution(target)
 	if err != nil {
-		return metrics, fmt.Errorf("dns resolution failed: %w", err)
+		metrics.errors = append(metrics.errors, fmt.Sprintf("dns resolution failed: %v", err))
+	} else {
+		metrics.dnsTime = dnsTime
 	}
-	metrics.dnsTime = dnsTime
 
 	// Ping/Latency (using stub for now as per existing logic)
 	result, err := e.monitor.pinger.pingTarget(target, true)
 	if err != nil {
-		return metrics, fmt.Errorf("ping failed: %w", err)
-	}
-	metrics.latency = result.latency
-	metrics.success = result.success
-	metrics.loss = result.loss
-	metrics.jitter = result.jitter
-	if len(result.errors) > 0 {
-		metrics.errors = append(metrics.errors, result.errors...)
+		metrics.errors = append(metrics.errors, fmt.Sprintf("ping failed: %v", err))
+	} else {
+		metrics.latency = result.latency
+		metrics.success = result.success
+		metrics.loss = result.loss
+		metrics.jitter = result.jitter
+		if len(result.errors) > 0 {
+			metrics.errors = append(metrics.errors, result.errors...)
+		}
 	}
 
 	// TCP Latency
@@ -648,11 +672,15 @@ func main() {
 	engine := NewMonitorEngine(monitor, state)
 	engine.Start()
 
+	// Register TUI as a listener
+	tuiEvents := make(chan MonitorEvent, 10)
+	engine.AddListener(tuiEvents)
+
 	var lastMetrics NetworkMetrics
 
 	// UI Update Loop (Consumes engine events)
 	go func() {
-		for event := range engine.events {
+		for event := range tuiEvents {
 			if event.Error != nil {
 				app.QueueUpdateDraw(func() {
 					fmt.Fprintf(logView, "[red]ERROR: %v[white]\n", event.Error)

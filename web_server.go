@@ -51,7 +51,6 @@ func NewWebServer(addr string) *WebServer {
 	monitor.initializeBaselineSpeeds()
 	state := NewAppState()
 	engine := NewMonitorEngine(monitor, state)
-	engine.Start()
 
 	ws := &WebServer{
 		addr:    addr,
@@ -62,25 +61,33 @@ func NewWebServer(addr string) *WebServer {
 		stopCh:  make(chan struct{}),
 	}
 
+	// Register web server as a listener
+	wsEvents := make(chan MonitorEvent, 10)
+	engine.AddListener(wsEvents)
+	engine.Start()
+
 	// Load templates
 	ws.tmpl = template.Must(template.ParseFS(templateFS, "web/templates/*.html"))
 
 	// Start the metrics sync goroutine
-	go ws.syncMetrics()
+	go ws.syncMetrics(wsEvents)
 
 	return ws
 }
 
 // syncMetrics consumes engine events and updates the cache.
-func (ws *WebServer) syncMetrics() {
+func (ws *WebServer) syncMetrics(events chan MonitorEvent) {
+	log.Printf("[web] syncMetrics started")
 	for {
 		select {
-		case event := <-ws.engine.events:
+		case event := <-events:
 			if event.Error != nil {
 				log.Printf("[web] monitor error: %v", event.Error)
 				continue
 			}
 			m := event.Metrics
+			log.Printf("[web] received metrics: latency=%v, dns=%v, tcp=%v, http=%v, dl=%.2f, ul=%.2f, errors=%v",
+				m.latency, m.dnsTime, m.tcpLatency, m.httpTTFB, m.downloadSpeed, m.uploadSpeed, m.errors)
 			ws.cache.Set(m)
 		case <-ws.stopCh:
 			return
@@ -120,8 +127,11 @@ func (ws *WebServer) Stop() {
 // ---------- HTTP Handlers ----------
 
 func (ws *WebServer) metricsHandler(w http.ResponseWriter, r *http.Request) {
+	m := ws.cache.Get()
+	log.Printf("[web] API metrics: latency=%v, dns=%v, tcp=%v, http=%v, dl=%.2f, ul=%.2f, errors=%v",
+		m.latency, m.dnsTime, m.tcpLatency, m.httpTTFB, m.downloadSpeed, m.uploadSpeed, m.errors)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(ws.cache.Get())
+	json.NewEncoder(w).Encode(m)
 }
 
 func (ws *WebServer) statusHandler(w http.ResponseWriter, r *http.Request) {
