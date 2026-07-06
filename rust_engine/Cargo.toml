@@ -1,0 +1,8 @@
+[package]
+name = "network_diagnostic_engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Placeholder for dependencies like tokio or pnet for actual low-level networking
+tokio = { version = "1.35", features = ["full"] }
