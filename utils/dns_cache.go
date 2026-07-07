@@ -1,25 +1,11 @@
-// utils/dns_cache.go - DNS Caching with TTL Support
-package main
+package utils
 
 import (
 	"fmt"
+	"hash/fnv"
 	"net"
 	"sync"
 	"time"
-)
-
-const (
-	// DefaultTTL is the default time-to-live for cached DNS entries
-	DefaultTTL = 60 * time.Second
-
-	// MinIdleTime is the minimum idle timeout for connection reuse
-	MinIdleTime = 10 * time.Millisecond
-
-	// MaxIdleTime is the maximum idle timeout for connection reuse
-	MaxIdleTime = time.Hour
-
-	// TTLRemainingLowThreshold is when we start warning about low TTL remaining
-	TTLRemainingLowThreshold = 10 * time.Second
 )
 
 // DNSCacheEntry represents a cached DNS resolution result
@@ -29,57 +15,75 @@ type DNSCacheEntry struct {
 	Timestamp time.Time
 }
 
-// DNSCache provides thread-safe DNS caching with TTL support
-type DNSCache struct {
+// cacheShard is an internal structure for a single locked piece of the cache
+type cacheShard struct {
 	mu      sync.RWMutex
 	entries map[string]DNSCacheEntry
-	ttl     time.Duration
 }
 
-// NewDNSCache creates a new DNS cache instance
+// DNSCache provides thread-safe, sharded DNS caching to reduce lock contention
+type DNSCache struct {
+	shards       []*cacheShard
+	numShards    int
+	defaultTTL   time.Duration
+}
+
+// NewDNSCache creates a new sharded DNS cache instance
 func NewDNSCache() *DNSCache {
-	return &DNSCache{
-		entries: make(map[string]DNSCacheEntry),
-		ttl:     DefaultTTL, // Use the defined default TTL constant
+	const shardCount = 16 // Power of 2 is ideal for distribution
+	dc := &DNSCache{
+		numShards:  shardCount,
+		shards:     make([]*cacheShard, shardCount),
+		defaultTTL: time.Second * 60, // Default 1 minute
 	}
+
+	for i := 0; i < shardCount; i++ {
+		dc.shards[i] = &cacheShard{
+			entries: make(map[string]DNSCacheEntry),
+		}
+	}
+
+	return dc
 }
 
-// SetTTL configures the default time-to-live for cached DNS results
+// getShardIndex calculates the index for a given hostname using FNV-1a hash
+func (dc *DNSCache) getShardIndex(hostname string) int {
+	h := fnv.New32a()
+	h.Write([]byte(hostname))
+	return int(h.Sum32()) % dc.numShards
+}
+
+// SetTTL configures the default time-to-live for all new entries
 func (dc *DNSCache) SetTTL(ttl time.Duration) {
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-	dc.ttl = ttl
-	fmt.Printf("DNS Cache TTL updated to: %v\n", dc.ttl)
+	dc.defaultTTL = ttl
 }
 
-// GetTTL returns the current TTL setting for DNS cache entries
+// GetTTL returns the current configured TTL
 func (dc *DNSCache) GetTTL() time.Duration {
-	dc.mu.RLock()
-	defer dc.mu.RUnlock()
-	return dc.ttl
+	return dc.defaultTTL
 }
 
 // Resolve attempts to resolve a hostname, using cached results when available
-// Returns: IP address and whether the result was from cache (true = cache hit)
 func (dc *DNSCache) Resolve(hostname string) (string, bool) {
-	// First check if we have a valid cached entry
-	dc.mu.RLock()
-	entry, exists := dc.entries[hostname]
-	dc.mu.RUnlock()
+	idx := dc.getShardIndex(hostname)
+	shard := dc.shards[idx]
+
+	shard.mu.RLock()
+	entry, exists := shard.entries[hostname]
+	shard.mu.RUnlock()
 
 	if !exists || time.Since(entry.Timestamp) > entry.TTL {
 		// Cache miss or expired - perform fresh DNS lookup
-		fmt.Printf("DNS cache miss for: %s\n", hostname)
+		fmt.Printf("DNS cache miss/expired for: %s\n", hostname)
 		return dc.performLookup(hostname, false)
 	}
 
-	// Cache hit - return stored IP address
-	fmt.Printf("DNS cache hit for: %s -> %s (TTL remaining: %v)\n",
+	fmt.Printf("DNS cache hit for: %s -> %s (TTL remaining: %v)\n", 
 		hostname, entry.IP, entry.TTL-time.Since(entry.Timestamp))
 	return entry.IP, true
 }
 
-// performLookup performs a fresh DNS resolution and caches the result
+// performLookup performs a fresh DNS resolution and caches the result into the correct shard
 func (dc *DNSCache) performLookup(hostname string, useCached bool) (string, bool) {
 	ipAddr, err := net.ResolveIPAddr("ip4", hostname)
 	if err != nil {
@@ -87,123 +91,84 @@ func (dc *DNSCache) performLookup(hostname string, useCached bool) (string, bool
 		return "", false
 	}
 
-	// Cache the successful result
 	newEntry := DNSCacheEntry{
 		IP:        ipAddr.IP.String(),
-		TTL:       dc.ttl,
+		TTL:       dc.defaultTTL,
 		Timestamp: time.Now(),
 	}
 
-	dc.mu.Lock()
-	dc.entries[hostname] = newEntry
-	dc.mu.Unlock()
+	idx := dc.getShardIndex(hostname)
+	shard := dc.shards[idx]
+
+	shard.mu.Lock()
+	shard.entries[hostname] = newEntry
+	shard.mu.Unlock()
 
 	fmt.Printf("DNS resolved and cached: %s -> %s\n", hostname, ipAddr.IP)
 	return ipAddr.IP.String(), true
 }
 
-// Clear removes a specific DNS entry from the cache
+// Clear removes a specific DNS entry from its corresponding shard
 func (dc *DNSCache) Clear(hostname string) {
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
+	idx := dc.getShardIndex(hostname)
+	shard := dc.shards[idx]
 
-	if _, exists := dc.entries[hostname]; exists {
-		delete(dc.entries, hostname)
-		fmt.Printf("Cleared DNS entry for: %s\n", hostname)
-	} else {
-		fmt.Printf("DNS entry not found for: %s\n", hostname)
-	}
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	delete(shard.entries, hostname)
+	fmt.Printf("Cleared DNS entry for: %s\n", hostname)
 }
 
 // ClearAll removes all cached DNS entries
 func (dc *DNSCache) ClearAll() {
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-
-	count := len(dc.entries)
-	if count > 0 {
-		dc.entries = make(map[string]DNSCacheEntry)
-		fmt.Printf("Cleared all %d DNS cache entries\n", count)
-	} else {
-		fmt.Println("No DNS entries to clear")
+	for _, shard := range dc.shards {
+		shard.mu.Lock()
+		shard.entries = make(map[string]DNSCacheEntry)
+		shard.mu.Unlock()
 	}
+	fmt.Println("Cleared all DNS cache entries")
 }
 
 // GetStats returns current cache statistics for monitoring/debugging
 func (dc *DNSCache) GetStats() map[string]interface{} {
-	dc.mu.RLock()
-	defer dc.mu.RUnlock()
+	totalEntries := 0
+	expiredCount := 0
 
-	count := len(dc.entries)
-	if count == 0 {
-		return map[string]interface{}{
-			"total_entries": 0,
-			"expired_count": 0,
-			"hit_rate":      "N/A",
+	for _, shard := range dc.shards {
+		shard.mu.RLock()
+		count := len(shard.entries)
+		totalEntries += count
+		for _, entry := range shard.entries {
+			if time.Since(entry.Timestamp) > entry.TTL {
+				expiredCount++
+			}
 		}
+		shard.mu.RUnlock()
 	}
 
-	// Count expired entries
-	expiredCount := 0
-	for _, entry := range dc.entries {
-		if time.Since(entry.Timestamp) > entry.TTL {
-			expiredCount++
-		}
+	hitRate := 0.0
+	if totalEntries > 0 {
+		hitRate = (100.0 * float64(totalEntries-expiredCount)) / float64(totalEntries)
 	}
 
 	return map[string]interface{}{
-		"total_entries": count,
+		"total_entries": totalEntries,
 		"expired_count": expiredCount,
-		"hit_rate":      fmt.Sprintf("%.2f%%", (100.0*float64(count-expiredCount))/float64(count)),
+		"hit_rate":      fmt.Sprintf("%.2f%%", hitRate),
 	}
 }
 
 // GetActiveEntries returns all currently valid (non-expired) DNS cache entries
 func (dc *DNSCache) GetActiveEntries() map[string]string {
-	dc.mu.RLock()
-	defer dc.mu.RUnlock()
-
 	active := make(map[string]string)
-	for host, entry := range dc.entries {
-		if time.Since(entry.Timestamp) <= entry.TTL {
-			active[host] = entry.IP
+	for _, shard := range dc.shards {
+		shard.mu.RLock()
+		for host, entry := range shard.entries {
+			if time.Since(entry.Timestamp) <= entry.TTL {
+				active[host] = entry.IP
+			}
 		}
+		shard.mu.RUnlock()
 	}
 	return active
-}
-
-// GetEntry returns a specific DNS cache entry (for testing/debugging)
-func (dc *DNSCache) GetEntry(hostname string) (*DNSCacheEntry, bool) {
-	dc.mu.RLock()
-	defer dc.mu.RUnlock()
-
-	entry, exists := dc.entries[hostname]
-	if !exists || time.Since(entry.Timestamp) > entry.TTL {
-		return nil, false
-	}
-
-	return &entry, true
-}
-
-// String returns a formatted string representation of the DNS cache contents
-func (dc *DNSCache) String() string {
-	dc.mu.RLock()
-	defer dc.mu.RUnlock()
-
-	result := "DNS Cache Contents:\n"
-	if len(dc.entries) == 0 {
-		return result + "  (empty)"
-	}
-
-	for host, entry := range dc.entries {
-		ttlRemaining := entry.TTL - time.Since(entry.Timestamp)
-		status := ""
-		if ttlRemaining < 0 {
-			status = " [EXPIRED]"
-		} else if ttlRemaining < TTLRemainingLowThreshold {
-			status = " [LOW TTL]"
-		}
-		result += fmt.Sprintf("  %s -> %s%s (TTL: %v)\n", host, entry.IP, status, ttlRemaining)
-	}
-	return result
 }
