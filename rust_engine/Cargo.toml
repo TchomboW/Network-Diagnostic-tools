@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 thiserror = "1.0"
 tokio = { version = "1.35", features = ["full"] }
+ping = { version = "0.10", features = ["tokio"] }
