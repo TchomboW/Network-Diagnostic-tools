@@ -1,22 +1,19 @@
-# Network-Diagnostic-tools
+# Network-Diagnostic-tools (Rust Engine)
 
-High-performance network utility suite for modern infrastructure.
+High-performance Rust implementation of the diagnostic engine.
 
-## 🚀 Architecture Improvements (Latest)
+## 🚀 Features
+- **Async Runtime**: Built on `tokio` for high-concurrency support.
+- **Error Handling**: Uses `thiserror` for rigorous type-safe error reporting.
+- **Precision Probe**: High-accuracy latency measurement logic.
 
-We have implemented advanced concurrency patterns to maximize throughput and minimize latency:
+## 🛠️ Installation
+```bash
+cd rust_engine
+cargo build --release
+```
 
-### 1. Optimized ICMP Connection Pooling (`network/pinger_pool.go`)
-* **Mechanism**: Transitioned from slice-based management to a **Buffered Channel** architecture.
-* **Performance**: Achieved $O(1)$ complexity for connection retrieval and return operations.
-* **Efficiency**: Implemented a background cleanup goroutine to manage idle connections without blocking the critical path.
-
-### 2. Sharded DNS Cache (`utils/dns_cache.go`)
-* **Mechanism**: Implemented **Lock Striping (Map Shing)** across 16 independent shards.
-* **Performance**: Drastically reduced lock contention in high-concurrency environments by using FNV-1a hash distribution.
-* **Reliability**: Provides thread-safe, highly scalable DNS resolution with TTL support.
-
-## 🛠️ Core Components
-- `cmd/`: Entry points for the toolset.
-- `network/`: High-performance ICMP pooling logic.
-- `utils/`: Optimized utility libraries (DNS Caching).
+## 🧪 Running Tests
+```bash
+cargo test
+```

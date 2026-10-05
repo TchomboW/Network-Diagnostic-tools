@@ -1,8 +1,8 @@
 [package]
 name = "network_diagnostic_engine"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
-# Placeholder for dependencies like tokio or pnet for actual low-level networking
+thiserror = "1.0"
 tokio = { version = "1.35", features = ["full"] }
