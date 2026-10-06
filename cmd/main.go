@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -14,8 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"network_tool"
-	"network_tool/tools/performance"
+	"network_tool/network"
 )
 
 func main() {
@@ -23,7 +23,6 @@ func main() {
 	target := flag.String("target", "8.8.8.8", "Target host to monitor (IP, hostname, or URL)")
 	interval := flag.Duration("interval", 5*time.Second, "Monitoring interval")
 	duration := flag.Duration("duration", 0, "Run for duration then exit (0 = infinite)")
-	webAddr := flag.String("web", "", "Start web UI on address (e.g., :8080)")
 	verbose := flag.Bool("verbose", false, "Enable verbose output")
 	version := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
@@ -35,33 +34,22 @@ func main() {
 	}
 
 	// Validate target
-	monitor := network_tool.NewNetworkMonitor()
-	if err := monitor.SetTarget(*target); err != nil {
+	if err := validateTarget(*target); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("=== Network Diagnostic Tool ===\n")
-	fmt.Printf("Target:    %s\n", monitor.GetTarget())
+	fmt.Printf("Target:    %s\n", *target)
 	fmt.Printf("Interval:  %s\n", *interval)
 	fmt.Printf("Platform:  %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Printf("Go:        %s\n", runtime.Version())
 	fmt.Printf("===============================\n\n")
 
-	if *webAddr != "" {
-		fmt.Printf("Starting web UI on http://%s\n\n", *webAddr)
-		// Start web server in background
-		go func() {
-			ws := NewWebServer(*webAddr)
-			ws.Start()
-		}()
-	}
-
-	// Set up signal handling for graceful shutdown
+	// Set up signal handling
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Main monitoring loop
 	ticker := time.NewTicker(*interval)
 	defer ticker.Stop()
 
@@ -76,7 +64,6 @@ func main() {
 		default:
 		}
 
-		// Check duration limit
 		if *duration > 0 && time.Since(startTime) >= *duration {
 			fmt.Printf("\nDuration %s reached. Exiting.\n", *duration)
 			return
@@ -84,25 +71,59 @@ func main() {
 
 		runCount++
 		fmt.Printf("\n--- Run #%d (%s) ---\n", runCount, time.Now().Format("15:04:05"))
+		runDiagnostics(*target, *verbose)
 
-		// Run diagnostics
-		runDiagnostics(monitor, *verbose)
-
-		// Wait for next interval
 		select {
 		case <-sigCh:
 			fmt.Printf("\nReceived %v, shutting down...\n", sig)
 			return
 		case <-ticker.C:
-			// Continue loop
 		}
 	}
 }
 
-// runDiagnostics runs the core network diagnostic checks.
-func runDiagnostics(monitor *network_tool.NetworkMonitor, verbose bool) {
-	target := monitor.GetTarget()
+func validateTarget(target string) error {
+	if target == "" {
+		return fmt.Errorf("target cannot be empty")
+	}
+	if net.ParseIP(target) != nil {
+		return nil
+	}
+	if _, err := net.LookupHost(target); err == nil {
+		return nil
+	}
+	return fmt.Errorf("invalid target: %s", target)
+}
 
+type pingResult struct {
+	transmitted int
+	received    int
+	avgLatency  float64
+	minLatency  float64
+	maxLatency  float64
+}
+
+type dnsResult struct {
+	ips         []string
+	resolveTime float64
+}
+
+type tcpResult struct {
+	success  bool
+	duration time.Duration
+}
+
+type httpResult struct {
+	status   string
+	duration time.Duration
+}
+
+type speedResult struct {
+	download float64
+	upload   float64
+}
+
+func runDiagnostics(target string, verbose bool) {
 	// 1. Ping test
 	fmt.Println("\n[PING] Testing connectivity...")
 	pingResult := runPingTest(target, 4)
@@ -117,9 +138,6 @@ func runDiagnostics(monitor *network_tool.NetworkMonitor, verbose bool) {
 			pingResult.minLatency, pingResult.avgLatency, pingResult.maxLatency)
 	}
 
-	// Track in performance monitor
-	monitor.TrackPingLatency(pingResult.avgLatency)
-
 	// 2. DNS lookup
 	fmt.Println("\n[DNS] Resolving hostname...")
 	dnsResult := runDNSTest(target)
@@ -131,230 +149,199 @@ func runDiagnostics(monitor *network_tool.NetworkMonitor, verbose bool) {
 	// 3. TCP connectivity
 	fmt.Println("\n[TCP] Testing port connectivity...")
 	tcpResult := runTCPTest(target, 443)
-	fmt.Printf("  Port 443 (HTTPS): %s (%v)\n",
-		map[bool]string{true: "OK", false: "FAIL"}[tcpResult.success], tcpResult.duration)
+	if tcpResult.success {
+		fmt.Printf("  Port 443 (HTTPS): OK (%v)\n", tcpResult.duration)
+	} else {
+		fmt.Printf("  Port 443 (HTTPS): FAIL\n")
+	}
 
 	// 4. HTTP check
 	fmt.Println("\n[HTTP] Checking HTTP response...")
 	httpResult := runHTTPTest(target)
 	fmt.Printf("  Status: %s (%v)\n", httpResult.status, httpResult.duration)
 
-	// 5. Speed test (if available)
+	// 5. Speed test
 	fmt.Println("\n[SPEED] Running speed test...")
 	speedResult := runSpeedTest()
 	fmt.Printf("  Download: %.2f Mbps\n", speedResult.download)
 	fmt.Printf("  Upload:   %.2f Mbps\n", speedResult.upload)
-	monitor.TrackSpeedTest(speedResult.download, speedResult.upload)
-
-	// Verbose output
-	if verbose {
-		fmt.Println("\n[VERBOSE] Detailed diagnostics:")
-		fmt.Printf("  Go version: %s\n", runtime.Version())
-		fmt.Printf("  OS: %s / Arch: %s\n", runtime.GOOS, runtime.GOARCH)
-		fmt.Printf("  NumCPU: %d\n", runtime.NumCPU())
-	}
-}
-
-// pingResult holds ping test results.
-type pingResult struct {
-	transmitted int
-	received    int
-	avgLatency  float64
-	minLatency  float64
-	maxLatency  float64
-}
-
-// dnsResult holds DNS test results.
-type dnsResult struct {
-	ips         []string
-	resolveTime float64
-}
-
-// tcpResult holds TCP test results.
-type tcpResult struct {
-	success  bool
-	duration time.Duration
-}
-
-// httpResult holds HTTP test results.
-type httpResult struct {
-	status   string
-	duration time.Duration
-}
-
-// speedResult holds speed test results.
-type speedResult struct {
-	download float64
-	upload   float64
 }
 
 func runPingTest(target string, count int) pingResult {
-	// Real ping via ICMP — try ping binary first, fall back to raw socket
-	// Requires root or CAP_NET_RAW for raw ICMP sockets
-	chunkSize := 32768
-	var results []float64
-	var minLat, maxLat float64 = math.MaxFloat64, 0
-	var received int
+	// Try raw ICMP first (requires root/CAP_NET_RAW)
+	fmt.Printf("  Attempting ICMP ping... ")
 
-	dialer := &net.Dialer{Timeout: 3 * time.Second}
+	// Check ICMP connectivity via /proc (Linux) or network interface flags
+	needRoot := isRootNeeded()
+	var latencies []float64
 
-	for i := 0; i < count; i++ {
-		start := time.Now()
-
-		// Try ICMP raw socket (requires root)
-		conn, err := net.DialIP("ip4:icmp", nil, &net.IPAddr{IP: net.ParseIP(target)})
-		if err == nil {
-			// Send echo request (type 8, code 0)
-			id := time.Now().UnixNano() % 65536
-			icmpPacket := []byte{
-				8, 0, 0, 0, // type, code, checksum (will calc)
-				byte(id >> 8), byte(id), // identifier
-				byte(i >> 8), byte(i),   // sequence
-			}
-			icmpPacket = append(icmpPacket, make([]byte, 64)...)
-			icmpPacket[2] = checksum(icmpPacket[8:])
-			conn.Write(icmpPacket)
-			conn.SetReadDeadline(time.Now().Add(time.Second))
-			buf := make([]byte, 128)
-			_, err = conn.Read(buf)
-			conn.Close()
-			if err == nil {
-				latency := float64(time.Since(start).Microseconds()) / 1000.0
-				results = append(results, latency)
-				received++
-				if latency < minLat {
-					minLat = latency
-				}
-				if latency > maxLat {
-					maxLat = latency
-				}
+	if needRoot {
+		fmt.Printf("  Not running as root; using UDP port probe instead.\n")
+		// Fallback: UDP probe (not true ICMP ping, no root required)
+		for i := 0; i < count; i++ {
+			start := time.Now()
+			conn, err := net.DialTimeout("udp", target+":"+fmt.Sprint(53+i), time.Second)
+			if err != nil {
 				continue
 			}
+			elapsed := time.Since(start).Seconds() * 1000.0
+			latencies = append(latencies, elapsed)
+			conn.Close()
 		}
-
-		// Fallback: UDP probe (no root)
-		conn2, err2 := dialer.Dial("udp", target+":53")
-		if err2 == nil {
-			conn2.Close()
-		}
-		elapsedMs := float64(time.Since(start).Microseconds()) / 1000.0
-		results = append(results, elapsedMs)
-		received++
-		if elapsedMs < minLat {
-			minLat = elapsedMs
-		}
-		if elapsedMs > maxLat {
-			maxLat = elapsedMs
-		}
+	} else {
+		// Use real ICMP via raw socket (requires root on Linux)
+		latencies, _ = rawICMPPing(target, count)
 	}
 
-	if minLat == math.MaxFloat64 {
-		minLat = 0
-	}
-
-	total := float64(0)
-	for _, r := range results {
-		total += r
-	}
-	avg := 0.0
-	if len(results) > 0 {
-		avg = total / float64(len(results))
+	if len(latencies) > 0 {
+		var total, min, max float64
+		min = math.MaxFloat64
+		for _, l := range latencies {
+			total += l
+			if l < min { min = l }
+			if l > max { max = l }
+		}
+		avg := total / float64(len(latencies))
+		return pingResult{
+			transmitted: len(latencies),
+			received:    len(latencies),
+			avgLatency:  avg,
+			minLatency:  min,
+			maxLatency:  max,
+		}
 	}
 
 	return pingResult{
 		transmitted: count,
-		received:    received,
-		avgLatency:  avg,
-		minLatency:  minLat,
-		maxLatency:  maxLat,
+		received:    0,
 	}
 }
 
-// check ICMP echo request
-func checkIcmpEchoRequest(b []byte) bool {
-	if len(b) < 64 {
-		return false
-	}
-	return b[8] == 0x08 && b[9] == 0x00
-}
-
-// checksum Calculate ICMP checksum
-func checksum(data []byte) byte {
-	var sum uint32
-	for i := 0; i < len(data); i += 2 {
-		if i+1 < len(data) {
-			sum += uint32(data[i])<<8 + uint32(data[i+1])
-		} else {
-			sum += uint32(data[i])<<8
+func isRootNeeded() bool {
+	// On Linux, check if we have net raw capability
+	// Simplified: just check if /proc/net/icmp exists
+	if _, err := os.Stat("/proc/net/icmp"); err == nil {
+		// We're on Linux
+		file, _ := os.Open("/proc/net/icmp")
+		if file != nil {
+			file.Close()
+			return false
 		}
 	}
-	for sum >> 16 != 0 {
-		sum = (sum & 0xFFFF) + (sum >> 16)
+	return true
+}
+
+func rawICMPPing(target string, count int) ([]float64, bool) {
+	// Resolve target
+	addr, err := net.ResolveIPAddr("ip", target)
+	if err != nil {
+		return nil, false
 	}
-	return byte(^sum & 0xFF)
+
+	// Create ICMP socket (requires root)
+	conn, err := net.ListenPacket("ip4:icmp", "0.0.0.0")
+	if err != nil {
+		return nil, false
+	}
+	defer conn.Close()
+
+	// Send ICMP echo requests
+	var latencies []float64
+	for i := 0; i < count; i++ {
+		icmpPacket := []byte{
+			8, 0x00, 0x00, 0x00, 0x00, 0x00, // Type 8, no ID/seq for simplicity
+			0x00, 0x00, 0x00, 0x00,
+			0x08, 0x0b, 0x00, 0x00, 0x40, 0x1f, // TTL 64
+			0x00, 0x00, 0x00, 0x00,
+		}
+
+		start := time.Now()
+		if _, err = conn.WriteTo(icmpPacket, &net.UDPAddr{IP: addr.IP, Port: 0}); err != nil {
+			continue
+		}
+
+		conn.SetReadDeadline(time.Now().Add(time.Second))
+		buf := make([]byte, 1024)
+		if _, _, err = conn.ReadFrom(buf); err != nil {
+			continue
+		}
+
+		lat := time.Since(start).Seconds() * 1000.0
+		latencies = append(latencies, lat)
+	}
+
+	return latencies, true
 }
 
 func runDNSTest(target string) dnsResult {
-	// Real DNS lookup
+	fmt.Print("  Looking up... ")
 	start := time.Now()
 	ips, err := net.LookupIP(target)
 	elapsed := float64(time.Since(start).Milliseconds())
 
 	if err != nil {
-		return dnsResult{
-			ips:         []string{},
-			resolveTime: elapsed,
-		}
+		fmt.Printf("FAIL (%v)\n", err)
+		return dnsResult{resolveTime: elapsed}
 	}
 
-	ipStrings := []string{}
+	ipStrings := make([]string, 0, len(ips))
 	for _, ip := range ips {
 		ipStrings = append(ipStrings, ip.String())
 	}
-
-	return dnsResult{
-		ips:         ipStrings,
-		resolveTime: elapsed,
-	}
+	fmt.Printf("OK (%d addresses)\n", len(ips))
+	return dnsResult{ips: ipStrings, resolveTime: elapsed}
 }
 
 func runTCPTest(target string, port int) tcpResult {
-	// Real TCP connect test
+	fmt.Print("  Connecting to port 443... ")
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	_, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", target, port))
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", target, port), 5*time.Second)
 	elapsed := time.Since(start)
-	_ = target
-	_ = err
 
-	return tcpResult{
-		success:  err == nil,
-		duration: elapsed,
+	if err != nil {
+		fmt.Printf("FAIL (%v)\n", err)
+		return tcpResult{success: false, duration: elapsed}
 	}
+	conn.Close()
+	fmt.Printf("OK (%v)\n", elapsed)
+	return tcpResult{success: true, duration: elapsed}
 }
 
 func runHTTPTest(target string) httpResult {
-	// Real HTTP request
+	fmt.Print("  Fetching... ")
 	url := "https://" + strings.TrimPrefix(target, "https://")
 	if strings.HasPrefix(target, "http") {
 		url = target
 	}
 
 	start := time.Now()
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(url)
-	elapsed := time.Since(start)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
 
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return httpResult{
-			status:   fmt.Sprintf("Error: %v", err),
-			duration: elapsed,
-		}
+		fmt.Printf("FAIL to create request: %v\n", err)
+		return httpResult{status: "Error creating request", duration: time.Since(start)}
+	}
+
+	client := &http.Client{
+		Timeout:   time.Second * 10,
+		Transport: defaultTransport(),
+	}
+
+	resp, err := client.Do(req)
+	elapsed := time.Since(start)
+	if err != nil {
+		fmt.Printf("FAIL (%v)\n", err)
+		return httpResult{status: fmt.Sprintf("Error: %v", err), duration: elapsed}
 	}
 	defer resp.Body.Close()
+
+	fmt.Printf("OK")
+	if resp.TLS != nil {
+		fmt.Printf(" (TLS: %s)", resp.TLS.Version)
+	}
+	fmt.Printf(" (%v)\n", elapsed)
 
 	return httpResult{
 		status:   fmt.Sprintf("%d %s", resp.StatusCode, http.StatusText(resp.StatusCode)),
@@ -362,42 +349,58 @@ func runHTTPTest(target string) httpResult {
 	}
 }
 
+func defaultTransport() http.RoundTripper {
+	return &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}
+
 const chunkSize = 32768
 
 func runSpeedTest() speedResult {
-	// Real speed test via Cloudflare's speed test endpoints
-	downloadStart := time.Now()
-	resp, err := http.Get("https://speed.cloudflare.com/__down?bytes=10000000")
-	downloadElapsed := time.Since(downloadStart).Seconds()
+	fmt.Print("  Download at 10 Mbps for ~6s... ")
+	url := "https://speed.cloudflare.com/__down?bytes=7500000"
+	start := time.Now()
+	resp, err := http.Get(url)
+	if err != nil {
+		fmt.Printf("FAIL (%v)\n", err)
+		return speedResult{}
+	}
+	defer resp.Body.Close()
 
-	downloadMbps := 0.0
-	if err == nil {
-		defer resp.Body.Close()
-		buf := make([]byte, chunkSize)
-		totalBytes := 0
-		for {
-			n, err := resp.Body.Read(buf)
-			if err != nil {
-				break
-			}
-			totalBytes += n
+	var bodyLen int
+	buf := make([]byte, chunkSize)
+	for {
+		n, err := resp.Body.Read(buf)
+		if err != nil {
+			break
 		}
-		downloadMbps = (float64(totalBytes) * 8 / 1000000.0) / downloadElapsed
+		bodyLen += n
 	}
+	elapsed := time.Since(start)
+	downloadMbps := (float64(bodyLen) * 8 / 1000000.0) / elapsed.Seconds()
+	fmt.Printf("OK (%.2f Mbps)\n", downloadMbps)
 
+	// Upload test at 1 Mbps for ~8s
+	fmt.Print("  Upload at 1 Mbps for ~8s... ")
+	url = "https://speed.cloudflare.com/__up"
 	uploadStart := time.Now()
-	uploadData := make([]byte, 1000000)
-	resp2, err := http.Post("https://speed.cloudflare.com/__up", "application/octet-stream", strings.NewReader(string(uploadData)))
-	uploadElapsed := time.Since(uploadStart).Seconds()
-
-	uploadMbps := 0.0
-	if err == nil {
-		defer resp2.Body.Close()
-		uploadMbps = (float64(len(uploadData)) * 8 / 1000000.0) / uploadElapsed
+	payload := bytes.NewReader(make([]byte, chunkSize))
+	req, _ := http.NewRequest("POST", url, payload)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Printf("FAIL (%v)\n", err)
+	} else {
+		resp2.Body.Close()
+		uploadElapsed := time.Since(uploadStart)
+		uploadMbps := (float64(chunkSize) * 8 / 1000000.0) / uploadElapsed.Seconds()
+		fmt.Printf("OK (%.2f Mbps)\n", uploadMbps)
 	}
 
-	return speedResult{
-		download: downloadMbps,
-		upload:   uploadMbps,
-	}
+	return speedResult{download: downloadMbps}
 }
