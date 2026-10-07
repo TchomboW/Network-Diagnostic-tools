@@ -5,7 +5,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"math"
 	"net"
 	"net/http"
 	"os"
@@ -14,8 +13,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"network_tool/network"
 )
 
 func main() {
@@ -74,7 +71,7 @@ func main() {
 		runDiagnostics(*target, *verbose)
 
 		select {
-		case <-sigCh:
+		case sig := <-sigCh:
 			fmt.Printf("\nReceived %v, shutting down...\n", sig)
 			return
 		case <-ticker.C:
@@ -171,13 +168,23 @@ func runPingTest(target string, count int) pingResult {
 	// Try raw ICMP first (requires root/CAP_NET_RAW)
 	fmt.Printf("  Attempting ICMP ping... ")
 
-	// Check ICMP connectivity via /proc (Linux) or network interface flags
-	needRoot := isRootNeeded()
-	var latencies []float64
+	// Resolve target first
+	addr, err := net.ResolveIPAddr("ip", target)
+	if err != nil {
+		fmt.Printf("DNS resolution failed: %v\n", err)
+		return pingResult{
+			transmitted: count,
+			received:    0,
+		}
+	}
 
+	// Try to open raw ICMP socket (requires root on Linux, works without on macOS)
+	icmpConn, icmpErr := net.ListenPacket("ip4:icmp", "0.0.0.0")
+	needRoot := icmpErr != nil
 	if needRoot {
-		fmt.Printf("  Not running as root; using UDP port probe instead.\n")
-		// Fallback: UDP probe (not true ICMP ping, no root required)
+		// Raw sockets require root. Fall back to UDP probe approach.
+		fmt.Printf("not running as root; using UDP port probe (not true ICMP ping).\n")
+		latencies := make([]float64, 0, count)
 		for i := 0; i < count; i++ {
 			start := time.Now()
 			conn, err := net.DialTimeout("udp", target+":"+fmt.Sprint(53+i), time.Second)
@@ -188,24 +195,91 @@ func runPingTest(target string, count int) pingResult {
 			latencies = append(latencies, elapsed)
 			conn.Close()
 		}
-	} else {
-		// Use real ICMP via raw socket (requires root on Linux)
-		latencies, _ = rawICMPPing(target, count)
+		if len(latencies) > 0 {
+			total, min, max := computeLatencyStats(latencies)
+			return pingResult{
+				transmitted: count,
+				received:    len(latencies),
+				avgLatency:  total,
+				minLatency:  min,
+				maxLatency:  max,
+			}
+		}
+		return pingResult{
+			transmitted: count,
+			received:    0,
+		}
+	}
+	defer icmpConn.Close()
+
+	// Use real ICMP via raw socket
+	fmt.Printf("using raw ICMP (root/CAP_NET_RAW).\n")
+	latencies := make([]float64, 0, count)
+	for i := 0; i < count; i++ {
+		// Build ICMP Echo Request (Type 8, Code 0) with proper checksum
+		seq := uint16(i)
+		id := uint16(os.Getpid())
+
+		// Build ICMP packet with real ID/sequence
+		// Size: 64 bytes (8 header + 56 payload) - standard size for ping
+		icmpPacket := make([]byte, 64)
+		icmpPacket[0] = 8  // Type: Echo Request
+		icmpPacket[1] = 0  // Code: 0
+		icmpPacket[4] = byte(id >> 8)      // ICMP ID high byte
+		icmpPacket[5] = byte(id & 0xFF)    // ICMP ID low byte
+		icmpPacket[6] = byte(seq >> 8)     // Sequence high byte
+		icmpPacket[7] = byte(seq & 0xFF)   // Sequence low byte
+		// Payload - timestamp for round-trip measurement
+		timestamp := time.Now().UnixNano() & 0xFFFFFFFF
+		icmpPacket[8] = byte(timestamp >> 24)
+		icmpPacket[9] = byte(timestamp >> 16)
+		icmpPacket[10] = byte(timestamp >> 8)
+		icmpPacket[11] = byte(timestamp)
+
+		// Compute ICMP checksum (proper 16-bit one's complement sum per RFC 792)
+		// Note: checksum field already zeroed by make()
+		icmpPacket[2] = 0
+		icmpPacket[3] = 0
+		iccksum := uint32(0)
+		for i := 0; i < len(icmpPacket); i += 2 {
+			if i+1 < len(icmpPacket) {
+				iccksum += uint32(icmpPacket[i])<<8 | uint32(icmpPacket[i+1])
+			} else {
+				iccksum += uint32(icmpPacket[i]) << 8
+			}
+		}
+		for (iccksum >> 16) != 0 {
+			iccksum = (iccksum & 0xFFFF) + (iccksum >> 16)
+		}
+		icmpPacket[2] = byte(^(iccksum & 0xFFFF) >> 8)
+		icmpPacket[3] = byte(^((iccksum & 0xFFFF)) & 0xFF)
+
+		start := time.Now()
+		// Send
+		if _, err = icmpConn.WriteTo(icmpPacket, &net.UDPAddr{IP: addr.IP, Port: 0}); err != nil {
+			continue
+		}
+		// Wait for response with timeout
+		icmpConn.SetReadDeadline(time.Now().Add(time.Second))
+		recvBuf := make([]byte, 1500)
+		n, _, err := icmpConn.ReadFrom(recvBuf)
+		if err != nil {
+			continue
+		}
+		// Verify response is Echo Reply (Type 0, Code 0)
+		if n < 8 || recvBuf[0] != 0 || recvBuf[1] != 0 {
+			continue
+		}
+		lat := time.Since(start).Seconds() * 1000.0
+		latencies = append(latencies, lat)
 	}
 
 	if len(latencies) > 0 {
-		var total, min, max float64
-		min = math.MaxFloat64
-		for _, l := range latencies {
-			total += l
-			if l < min { min = l }
-			if l > max { max = l }
-		}
-		avg := total / float64(len(latencies))
+		total, min, max := computeLatencyStats(latencies)
 		return pingResult{
-			transmitted: len(latencies),
+			transmitted: count,
 			received:    len(latencies),
-			avgLatency:  avg,
+			avgLatency:  total,
 			minLatency:  min,
 			maxLatency:  max,
 		}
@@ -215,6 +289,27 @@ func runPingTest(target string, count int) pingResult {
 		transmitted: count,
 		received:    0,
 	}
+}
+
+// computeLatencyStats calculates average, min, and max from a slice of latencies
+func computeLatencyStats(latencies []float64) (avg float64, min float64, max float64) {
+	if len(latencies) == 0 {
+		return 0, 0, 0
+	}
+	total := 0.0
+	min = latencies[0]
+	max = latencies[0]
+	for _, l := range latencies {
+		total += l
+		if l < min {
+			min = l
+		}
+		if l > max {
+			max = l
+		}
+	}
+	avg = total / float64(len(latencies))
+	return avg, min, max
 }
 
 func isRootNeeded() bool {
@@ -229,48 +324,6 @@ func isRootNeeded() bool {
 		}
 	}
 	return true
-}
-
-func rawICMPPing(target string, count int) ([]float64, bool) {
-	// Resolve target
-	addr, err := net.ResolveIPAddr("ip", target)
-	if err != nil {
-		return nil, false
-	}
-
-	// Create ICMP socket (requires root)
-	conn, err := net.ListenPacket("ip4:icmp", "0.0.0.0")
-	if err != nil {
-		return nil, false
-	}
-	defer conn.Close()
-
-	// Send ICMP echo requests
-	var latencies []float64
-	for i := 0; i < count; i++ {
-		icmpPacket := []byte{
-			8, 0x00, 0x00, 0x00, 0x00, 0x00, // Type 8, no ID/seq for simplicity
-			0x00, 0x00, 0x00, 0x00,
-			0x08, 0x0b, 0x00, 0x00, 0x40, 0x1f, // TTL 64
-			0x00, 0x00, 0x00, 0x00,
-		}
-
-		start := time.Now()
-		if _, err = conn.WriteTo(icmpPacket, &net.UDPAddr{IP: addr.IP, Port: 0}); err != nil {
-			continue
-		}
-
-		conn.SetReadDeadline(time.Now().Add(time.Second))
-		buf := make([]byte, 1024)
-		if _, _, err = conn.ReadFrom(buf); err != nil {
-			continue
-		}
-
-		lat := time.Since(start).Seconds() * 1000.0
-		latencies = append(latencies, lat)
-	}
-
-	return latencies, true
 }
 
 func runDNSTest(target string) dnsResult {
@@ -385,22 +438,23 @@ func runSpeedTest() speedResult {
 	downloadMbps := (float64(bodyLen) * 8 / 1000000.0) / elapsed.Seconds()
 	fmt.Printf("OK (%.2f Mbps)\n", downloadMbps)
 
-	// Upload test at 1 Mbps for ~8s
-	fmt.Print("  Upload at 1 Mbps for ~8s... ")
+	// Upload test - send 512KB payload to get meaningful measurement
+	fmt.Print("  Upload at 10 Mbps for ~8s... ")
 	url = "https://speed.cloudflare.com/__up"
-	uploadStart := time.Now()
-	payload := bytes.NewReader(make([]byte, chunkSize))
+	payload := bytes.NewReader(make([]byte, 512*1024))
 	req, _ := http.NewRequest("POST", url, payload)
 	req.Header.Set("Content-Type", "application/octet-stream")
+	var uploadMbps float64
+	uploadStart := time.Now()
 	resp2, err := http.DefaultClient.Do(req)
 	if err != nil {
 		fmt.Printf("FAIL (%v)\n", err)
 	} else {
 		resp2.Body.Close()
 		uploadElapsed := time.Since(uploadStart)
-		uploadMbps := (float64(chunkSize) * 8 / 1000000.0) / uploadElapsed.Seconds()
+		uploadMbps = (512.0 * 8 / 1000.0) / uploadElapsed.Seconds()
 		fmt.Printf("OK (%.2f Mbps)\n", uploadMbps)
 	}
 
-	return speedResult{download: downloadMbps}
+	return speedResult{download: downloadMbps, upload: uploadMbps}
 }
