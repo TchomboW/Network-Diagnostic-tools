@@ -1,7 +1,7 @@
 package icmp
 
 import (
-	"encoding/binary"
+
 	"fmt"
 	"net"
 	"net/netip"
@@ -188,7 +188,7 @@ func (p *Pinger) Run() []PingResult {
 		p.conn = conn.(*net.UDPConn)
 	}
 
-	defer p.close()
+	defer p.Close()
 
 	for i := 0; i < p.count; i++ {
 		select {
@@ -240,11 +240,13 @@ func (p *Pinger) Run() []PingResult {
 }
 
 func (pinger *Pinger) writeICMP(packet []byte) error {
-	_, err := p.conn.WriteTo(packet, &net.UDPAddr{IP: pinger.target.AsSlice(), Port: 0})
+	_, err := pinger.conn.WriteTo(packet, &net.UDPAddr{IP: pinger.target.AsSlice(), Port: 0})
 	return err
 }
 
 // Close shuts down the Pinger.
 func (p *Pinger) Close() {
-	p.close()
+	if p.conn != nil {
+		p.conn.Close()
+	}
 }
