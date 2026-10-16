@@ -71,17 +71,14 @@ Options:
 Production-grade implementation with proper ICMP echo request handling, packet parsing, sequence verification, and error recovery.
 
 **Features:**
-- Real ICMP echo requests via `ICMP_ECHO()` syscall
-- Proper packet format with correct checksum calculation
-- Sequence number verification (echo must match request seq)
-- Source address verification (ping must come from target, not router)
-- Comprehensive ping statistics: min/avg/max/loss/metric variance
-- DNS resolution timing with `net.LookupIP()`
+- Real ICMP echo requests via raw sockets with proper checksum (RFC 1071)
+- Sharded DNS cache with TTL-based expiry and background cleanup goroutine
 - TCP/443 connection testing with timing
 - HTTP request verification with status code validation (expect 200)
 - TLS handshake and certificate verification
 - Download/upload speed testing with bandwidth measurement
 - Comprehensive JSON output for programmatic consumption
+- IPv4/IPv6 fully supported with correct `::` compression handling
 
 **Installation:**
 ```bash
@@ -134,25 +131,45 @@ The tool suite follows a modular architecture with clear separation of concerns:
 ```
 Network-Diagnostic-tools/
 ├── network-diagnostic.py    # Python CLI implementation (recommended)
-├── src/                     # Go implementation with ICMP ping logic
-│   └── main.go              # Main entry point: CLI handling and test execution
 ├── cmd/                     # Go command-line interface
+│   └── main.go              # Main entry point: CLI handling and test execution
 ├── pkg/                     # Go packages
 │   ├── icmp/                # ICMP ping implementation with proper checksum
+│   │   ├── ping.go          # Echo request/reply logic
+│   │   ├── pinger_pool.go   # Connection pool for concurrent pings
+│   │   └── checksum.go      # Single source of truth for ICMP checksum (RFC 1071)
 │   ├── dns/                 # DNS resolution testing
 │   ├── http/                # HTTP request testing and TLS inspection
 │   └── speed/               # Download/upload speed testing
-├── rust_engine/             # Rust high-performance implementation
-│   ├── src/                 # Rust source with async runtime
-│   └── Cargo.toml           # Rust dependencies
-├── web/                     # Web UI for visual dashboard
+├── utils/                   # Shared utilities
+│   ├── dns_cache.go         # Sharded DNS cache with TTL + background cleanup
+│   └── retry_middleware.go  # Exponential backoff with circuit breaker
+├── lib/                     # Network helper functions
+│   └── network_helpers.go   # URL, IP, and hostname validation (net.ParseIP)
+├── network/                 # Network layer implementations
+│   └── pinger_pool.go       # ICMP connection pooling
 ├── tests/                   # Go unit and integration tests
-├── docs/                    # Documentation
-├── utils/                   # Build and dev utilities
-├── tools/                   # Development tools and scripts
-├── releases/                # Pre-built binary releases
-└── Makefile                 # Build automation
+└── docs/                    # Documentation
 ```
+
+## Recent Optimizations (v2025.10.16)
+
+### P0 (Critical Bug Fixes)
+- **Fixed EchoRequest checksum bug**: Removed overlapping manual + `net.ChecksumICMP` double-write that caused checksum corruption
+- **Removed dead code**: `isRootNeeded()` function was unused and misleading
+
+### P1 (High-Impact Improvements)
+- **Consolidated checksum logic**: Single source of truth in `pkg/icmp/checksum.go` (deduplicated across 3 files)
+- **Added `IsICMP` flag**: Distinguishes raw ICMP results from UDP fallback probes in output
+- **DNS cache lifecycle**: Background cleanup goroutine + `Close()` method for proper resource management
+
+### P2 (Medium Improvements)
+- **IPv6 validation**: Replaced manual validation with `net.ParseIP` for correct `::` compression handling
+- **Cleaned utilities**: Removed 13 debug stub files from `utils/`
+- **Standard library usage**: Replaced manual `contains()` with `strings.Contains()`
+
+### P3 (Low-Impact Optimizations)
+- **HTTP transport caching**: Cached `http.Transport` as package-level variable to avoid repeated allocation
 
 ## Testing
 
