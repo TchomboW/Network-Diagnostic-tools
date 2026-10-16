@@ -1,8 +1,8 @@
 package networktool
 
 import (
-	"fmt"
 	"math"
+	"net"
 	"net/url"
 	"strings"
 )
@@ -103,113 +103,23 @@ func isValidHostname(hostname string) bool {
 }
 
 // isValidIPAddress validates IP address format (IPv4 and IPv6)
+// Uses net.ParseIP for correctness with all IPv6 notations including :: compression
 func isValidIPAddress(ip string) bool {
 	ip = strings.TrimSpace(ip)
 	
-	// Check for IPv6 format with brackets [::1]
+	// Handle bracketed IPv6 [::1]
 	if strings.HasPrefix(ip, "[") && strings.HasSuffix(ip, "]") {
-		internalIP := ip[1 : len(ip)-1]
-		return isIPv6Internal(internalIP) || isIPv4Internal(internalIP)
+		ip = ip[1 : len(ip)-1]
 	}
-
-	// Try IPv4 first
-	if isIPv4Internal(ip) {
-		return true
-	}
-
-	// Then try IPv6 (no brackets)
-	return isIPv6Internal(ip)
-}
-
-func isIPv4Internal(ip string) bool {
-	parts := strings.Split(ip, ".")
 	
-	if len(parts) != 4 {
-		return false
-	}
-
-	for _, part := range parts {
-		if !isValidIPv4Octet(part) {
-			return false
-		}
-	}
-
-	return true
+	return net.ParseIP(ip) != nil
 }
 
-func isIPv6Internal(ip string) bool {
-	// Check for IPv6 format
-	parts := strings.Split(ip, ":")
-	
-	if len(parts) < 2 || len(parts) > 8 {
-		return false
-	}
-
-	for _, part := range parts {
-		if part == "" {
-			continue // Empty segments are allowed in IPv6 (:: notation)
-		}
-		
-		if !isValidIPv6Segment(part) {
-			return false
-		}
-	}
-
-	return true
-}
-
+// isValidIPv4Octet validates a single IPv4 octet (0-255)
 func isValidIPv4Octet(octet string) bool {
-	// Check if it's a valid number between 0-255
-	num, err := parseUnsignedInt(octet)
-	if err != nil {
-		return false
-	}
-
-	// Remove leading zeros (except for "0" itself)
-	trimmedOctet := strings.TrimLeft(num, "0")
-	if trimmedOctet == "" {
-		trimmedOctet = "0"
-	}
-
-	// Re-parse to get the actual numeric value
-	value := 0.0
-	fmt.Sscanf(trimmedOctet, "%f", &value)
-	return value >= 0 && value <= 255
-}
-
-func isValidIPv6Segment(segment string) bool {
-	// IPv6 segments are hexadecimal
-	if len(segment) == 0 || len(segment) > 4 {
-		return false
-	}
-
-	for _, c := range segment {
-		if !((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || 
-		     (c >= '0' && c <= '9')) {
-			return false
-		}
-	}
-
-	return true
-}
-
-func parseUnsignedInt(s string) (string, error) {
-	if len(s) == 0 {
-		return "", fmt.Errorf("empty string")
-	}
-
-	var result []byte
-	
-	for _, c := range s {
-		switch c {
-		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
-			result = append(result, byte(c))
-		default:
-			return "", fmt.Errorf("invalid character")
-		}
-	}
-
-	return string(result), nil
+	// Delegate to net.ParseIP for correctness
+	ip := net.ParseIP(octet)
+	return ip != nil && ip.To4() != nil
 }
 
 // isValidFloat validates float values are reasonable for network speeds

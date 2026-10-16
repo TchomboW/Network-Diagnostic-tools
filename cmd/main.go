@@ -98,6 +98,7 @@ type pingResult struct {
 	avgLatency  float64
 	minLatency  float64
 	maxLatency  float64
+	IsICMP      bool // true = raw ICMP, false = UDP fallback
 }
 
 type dnsResult struct {
@@ -282,6 +283,7 @@ func runPingTest(target string, count int) pingResult {
 			avgLatency:  total,
 			minLatency:  min,
 			maxLatency:  max,
+			IsICMP:      true,
 		}
 	}
 
@@ -310,20 +312,6 @@ func computeLatencyStats(latencies []float64) (avg float64, min float64, max flo
 	}
 	avg = total / float64(len(latencies))
 	return avg, min, max
-}
-
-func isRootNeeded() bool {
-	// On Linux, check if we have net raw capability
-	// Simplified: just check if /proc/net/icmp exists
-	if _, err := os.Stat("/proc/net/icmp"); err == nil {
-		// We're on Linux
-		file, _ := os.Open("/proc/net/icmp")
-		if file != nil {
-			file.Close()
-			return false
-		}
-	}
-	return true
 }
 
 func runDNSTest(target string) dnsResult {
@@ -379,7 +367,7 @@ func runHTTPTest(target string) httpResult {
 
 	client := &http.Client{
 		Timeout:   time.Second * 10,
-		Transport: defaultTransport(),
+		Transport: defaultTransport,
 	}
 
 	resp, err := client.Do(req)
@@ -402,15 +390,13 @@ func runHTTPTest(target string) httpResult {
 	}
 }
 
-func defaultTransport() http.RoundTripper {
-	return &http.Transport{
+var defaultTransport = &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		DialContext:           (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
-}
 
 const chunkSize = 32768
 

@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"fmt"
 	"hash/fnv"
 	"net"
@@ -26,15 +27,22 @@ type DNSCache struct {
 	shards       []*cacheShard
 	numShards    int
 	defaultTTL   time.Duration
+	ctx          context.Context
+	cancel       context.CancelFunc
+	cleanupDone  chan struct{} // closed when cleanup goroutine exits
 }
 
 // NewDNSCache creates a new sharded DNS cache instance
 func NewDNSCache() *DNSCache {
 	const shardCount = 16 // Power of 2 is ideal for distribution
+	ctx, cancel := context.WithCancel(context.Background())
 	dc := &DNSCache{
-		numShards:  shardCount,
-		shards:     make([]*cacheShard, shardCount),
-		defaultTTL: time.Second * 60, // Default 1 minute
+		numShards:   shardCount,
+		shards:      make([]*cacheShard, shardCount),
+		defaultTTL:  time.Second * 60, // Default 1 minute
+		ctx:         ctx,
+		cancel:      cancel,
+		cleanupDone: make(chan struct{}),
 	}
 
 	for i := 0; i < shardCount; i++ {
@@ -43,7 +51,46 @@ func NewDNSCache() *DNSCache {
 		}
 	}
 
+	// Start background cleanup goroutine to remove expired entries every 30s
+	go dc.cleanupLoop()
+
 	return dc
+}
+
+// cleanupLoop periodically removes expired DNS cache entries
+func (dc *DNSCache) cleanupLoop() {
+	defer close(dc.cleanupDone)
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-dc.ctx.Done():
+			return
+		case <-ticker.C:
+			dc.cleanupExpired()
+		}
+	}
+}
+
+// cleanupExpired removes expired entries from all shards
+func (dc *DNSCache) cleanupExpired() {
+	now := time.Now()
+	for _, shard := range dc.shards {
+		shard.mu.Lock()
+		for host, entry := range shard.entries {
+			if now.Sub(entry.Timestamp) > entry.TTL {
+				delete(shard.entries, host)
+			}
+		}
+		shard.mu.Unlock()
+	}
+}
+
+// Close stops the background cleanup goroutine
+func (dc *DNSCache) Close() {
+	dc.cancel()
+	<-dc.cleanupDone
 }
 
 // getShardIndex calculates the index for a given hostname using FNV-1a hash

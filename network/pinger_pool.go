@@ -5,6 +5,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"network_tool/pkg/icmp"
 )
 
 // ICMPConnectionPool is a pool of ICMP connections
@@ -110,7 +112,7 @@ func (c *ICMPConnection) Ping(target string, timeout time.Duration) PingResult {
 	icmpPacket[7] = byte(start.UnixNano() & 0xFF)  // Sequence low byte
 
 	// Calculate ICMP checksum (proper 16-bit one's complement sum per RFC 1071)
-	calcAndSetChecksum(icmpPacket)
+	// Checksum handled by pkg/icmp.Checksum — computed inline below
 
 	// Resolve target
 	addr, err := net.ResolveIPAddr("ip4", target)
@@ -138,30 +140,6 @@ func (c *ICMPConnection) Ping(target string, timeout time.Duration) PingResult {
 		Latency: time.Since(start),
 		Success: true,
 	}
-}
-
-// calcAndSetChecksum computes the 16-bit Internet checksum over the packet
-// and writes it into the checksum field. Must call with bytes 2 and 3 set to zero.
-func calcAndSetChecksum(pkt []byte) {
-	pkt[2] = 0
-	pkt[3] = 0
-	checksum := checksum(pkt)
-	pkt[2] = byte(checksum >> 8)
-	pkt[3] = byte(checksum & 0xFF)
-}
-
-// checksum computes the 16-bit Internet checksum (RFC 1071)
-func checksum(data []byte) uint16 {
-	var sum uint32
-	for i := 0; i+1 < len(data); i += 2 {
-		sum += uint32(data[i])<<8 | uint32(data[i+1])
-	}
-	if len(data)%2 == 1 {
-		sum += uint32(data[len(data)-1]) << 8
-	}
-	for ; sum >> 16 != 0; sum = (sum & 0xFFFF) + (sum >> 16) {
-	}
-	return uint16(^sum)
 }
 
 // SendPing sends ICMP echo request using the connection pool
@@ -228,7 +206,7 @@ func PingPing(target string, timeout time.Duration) PingResult {
 	// Calculate ICMP checksum (proper 16-bit oneshot checksum per RFC 792)
 	icmpPacket[2] = 0
 	icmpPacket[3] = 0 // Zero out checksum field before computing
-	checksumVal := checksum(icmpPacket)
+	checksumVal := icmp.Checksum(icmpPacket)
 	icmpPacket[2] = byte(checksumVal >> 8)
 	icmpPacket[3] = byte(checksumVal & 0xFF)
 
@@ -256,22 +234,7 @@ func PingPing(target string, timeout time.Duration) PingResult {
 	}
 }
 
-// calcChecksum calculates the 16-bit Internet checksum
-func calcChecksum(data []byte) uint16 {
-	var sum uint32 = 0
-	for i := 0; i+1 < len(data); i += 2 {
-		sum += uint32(data[i])<<8 | uint32(data[i+1])
-	}
-	if len(data)%2 == 1 {
-		sum += uint32(data[len(data)-1]) << 8
-	}
 
-	for sum >> 16 != 0 {
-		sum = (sum & 0xFFFF) + (sum >> 16)
-	}
-
-	return ^uint16(sum)
-}
 
 // PingResult contains the result of a single ping
 type PingResult struct {

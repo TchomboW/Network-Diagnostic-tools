@@ -3,6 +3,7 @@ package utils
 
 import (
 	"math/rand"
+	"strings"
 	"time"
 )
 type MiddlewareResult struct {
@@ -87,45 +88,10 @@ func isRetryableError(err error) bool {
 	}
 
 	for _, pattern := range retryablePatterns {
-		if contains(errMsg, pattern) {
+		if strings.Contains(errMsg, pattern) {
 			return true // Found a retryable error pattern
 		}
 	}
 
 	return false // No known transient error patterns matched
-}
-
-// contains checks if a string contains another as a substring (case-sensitive).
-// It handles empty strings and edge cases properly.
-func contains(s, substr string) bool {
-	// Empty search term matches anywhere
-	if len(substr) == 0 {
-		return true
-	}
-
-	// If haystack is shorter than needle, can't contain it
-	if len(s) < len(substr) {
-		return false
-	}
-
-	// Check if they're identical first (fast path for exact match)
-	if s == substr {
-		return true
-	}
-
-	// Otherwise, search through the string character by character
-	for i := 0; i <= len(s)-len(substr); i++ {
-		match := true
-		for j := 0; j < len(substr); j++ {
-			if s[i+j] != substr[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true // Found a matching substring
-		}
-	}
-
-	return false // No substring found
 }

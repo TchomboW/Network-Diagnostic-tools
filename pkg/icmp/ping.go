@@ -20,21 +20,21 @@ type Identifier uint16
 func EchoRequest(id Identifier, seq Sequence, size int) []byte {
 	payload := make([]byte, size-8)
 	pkt := make([]byte, 8+len(payload))
-	pkt[0] = 8  // Type: Echo Request
-	pkt[1] = 0  // Code
-	pkt[2] = byte(id >> 8)
-	pkt[3] = byte(id & 0xFF)
-	pkt[4] = byte(seq >> 8)
-	pkt[5] = byte(seq & 0xFF)
-	// Zero out checksum field before computing
-	pkt[2] = 0
-	pkt[3] = 0
-	// Compute checksum over entire packet
-	chksum := calcChecksum(pkt)
+	pkt[0] = 8 // Type: Echo Request
+	pkt[1] = 0 // Code
+	// ID at bytes 4-5, Sequence at bytes 6-7; checksum at bytes 2-3 (starts zero)
+
+	// Set ID and Sequence before computing checksum
+	pkt[4] = byte(id >> 8)
+	pkt[5] = byte(id & 0xFF)
+	pkt[6] = byte(seq >> 8)
+	pkt[7] = byte(seq & 0xFF)
+
+	// Compute checksum over entire packet (bytes 2-3 already zero)
+	chksum := Checksum(pkt)
 	pkt[2] = byte(chksum >> 8)
 	pkt[3] = byte(chksum & 0xFF)
-	pkt[4] = 0
-	pkt[5] = 0
+
 	return pkt
 }
 
@@ -46,30 +46,16 @@ func EchoReply(pkt []byte) (Identifier, Sequence, error) {
 	if pkt[0] != 0 {
 		return 0, 0, fmt.Errorf("packet not Echo Reply")
 	}
-	id := Identifier(pkt[2]<<8) | Identifier(pkt[3])
-	seq := Sequence(pkt[4]<<8) | Sequence(pkt[5])
+	id := Identifier(pkt[4]<<8) | Identifier(pkt[5])
+	seq := Sequence(pkt[6]<<8) | Sequence(pkt[7])
 	// Verify checksum on entire packet
-	chksum := calcChecksum(pkt)
+	chksum := Checksum(pkt)
 	if chksum != 0 {
 		return 0, 0, fmt.Errorf("checksum mismatch: got %d, expected 0", chksum)
 	}
 	return id, seq, nil
 }
 
-// calcChecksum computes the 16-bit Internet checksum (RFC 1071).
-func calcChecksum(data []byte) uint16 {
-	var sum uint32 = 0
-	for i := 0; i+1 < len(data); i += 2 {
-		sum += uint32(data[i])<<8 | uint32(data[i+1])
-	}
-	if len(data)%2 == 1 {
-		sum += uint32(data[len(data)-1]) << 8
-	}
-	for sum >> 16 != 0 {
-		sum = (sum & 0xFFFF) + (sum >> 16)
-	}
-	return ^uint16(sum)
-}
 
 // SequenceGenerator is a thread-safe sequence number generator.
 type SequenceGenerator struct {
