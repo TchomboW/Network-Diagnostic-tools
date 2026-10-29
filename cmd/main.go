@@ -380,7 +380,7 @@ func runHTTPTest(target string) httpResult {
 
 	fmt.Printf("OK")
 	if resp.TLS != nil {
-		fmt.Printf(" (TLS: %s)", resp.TLS.Version)
+		fmt.Printf(" (TLS: %04x)", resp.TLS.Version)
 	}
 	fmt.Printf(" (%v)\n", elapsed)
 
