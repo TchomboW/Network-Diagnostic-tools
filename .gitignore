@@ -17,3 +17,15 @@ network_tool_test
 
 # Project metadata / temporary state
 project_state.json
+
+# Rust build artifacts
+rust_engine/target/
+
+# Release builds
+releases/
+
+# Binaries
+bin/
+
+# Go lint config
+golangci-lint.cache
