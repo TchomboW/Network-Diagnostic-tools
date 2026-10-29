@@ -46,8 +46,8 @@ func EchoReply(pkt []byte) (Identifier, Sequence, error) {
 	if pkt[0] != 0 {
 		return 0, 0, fmt.Errorf("packet not Echo Reply")
 	}
-	id := Identifier(pkt[4]<<8) | Identifier(pkt[5])
-	seq := Sequence(pkt[6]<<8) | Sequence(pkt[7])
+	id := Identifier(pkt[4])<<8 | Identifier(pkt[5])
+	seq := Sequence(pkt[6])<<8 | Sequence(pkt[7])
 	// Verify checksum on entire packet
 	chksum := Checksum(pkt)
 	if chksum != 0 {
