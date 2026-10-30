@@ -21,6 +21,7 @@ pub struct ProbeResult {
     pub latency: Duration,
 }
 
+#[derive(Clone)]
 pub struct DiagnosticEngine {
     pub default_timeout: Duration,
 }

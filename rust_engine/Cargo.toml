@@ -7,3 +7,6 @@ edition = "2021"
 thiserror = "1.0"
 tokio = { version = "1.35", features = ["full"] }
 ping = { version = "0.10", features = ["tokio"] }
+axum = { version = "0.7", features = ["macros"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

@@ -2,21 +2,55 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"context"
+	"embed"
 	"flag"
 	"fmt"
+	"html/template"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
+//go:embed web/static web/templates
+var webFS embed.FS
+
+const (
+	staticDir     = "web/static"
+	templatesDir  = "web/templates"
+)
+
+type Metrics struct {
+	Latency       float64 `json:"latency"`
+	Jitter        float64 `json:"jitter"`
+	Loss          float64 `json:"loss"`
+	TCP           float64 `json:"tcp"`
+	DNS           float64 `json:"dns"`
+	HTTP          float64 `json:"http"`
+	DownloadSpeed float64 `json:"download_speed"`
+	UploadSpeed   float64 `json:"upload_speed"`
+	IssueDetected bool    `json:"issue_detected"`
+	IssueSummary  string  `json:"issue_summary"`
+}
+
+type Monitor struct {
+	mu      sync.RWMutex
+	Metrics Metrics
+	Target  string
+	Paused  bool
+}
+
 func main() {
-	// CLI flags
+	webMode := flag.Bool("web", false, "Run in web dashboard mode")
+	port := flag.String("port", "8080", "Web server port")
 	target := flag.String("target", "8.8.8.8", "Target host to monitor (IP, hostname, or URL)")
 	interval := flag.Duration("interval", 5*time.Second, "Monitoring interval")
 	duration := flag.Duration("duration", 0, "Run for duration then exit (0 = infinite)")
@@ -30,9 +64,14 @@ func main() {
 		os.Exit(0)
 	}
 
+	if *webMode {
+		startWebServer(*target, *port, *interval)
+		return
+	}
+
 	// Validate target
-	if err := validateTarget(*target); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	if *target != "" && validateTarget(*target) != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", validateTarget(*target))
 		os.Exit(1)
 	}
 
@@ -43,7 +82,6 @@ func main() {
 	fmt.Printf("Go:        %s\n", runtime.Version())
 	fmt.Printf("===============================\n\n")
 
-	// Set up signal handling
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -443,4 +481,163 @@ func runSpeedTest() speedResult {
 	}
 
 	return speedResult{download: downloadMbps, upload: uploadMbps}
+}
+
+
+
+func startWebServer(target, port string, interval time.Duration) {
+	monitor := &Monitor{
+		Target: target,
+		Paused: false,
+	}
+	go monitorDiagnostics(monitor, interval)
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			handleIndex(w, r, monitor)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			handleAPI(w, r, monitor)
+			return
+		}
+		handleStatic(w, r)
+	})
+
+	addr := fmt.Sprintf(":%s", port)
+	fmt.Printf("Web dashboard starting on %s\n", addr)
+	fmt.Printf("Open http://localhost%s in your browser\n", addr)
+
+	go func() {
+		if err := http.ListenAndServe(addr, nil); err != nil {
+			fmt.Printf("Server failed: %v\n", err)
+			os.Exit(1)
+		}
+	}()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+	fmt.Printf("\nShutting down server...\n")
+	os.Exit(0)
+}
+
+func monitorDiagnostics(m *Monitor, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if m.Paused {
+			continue
+		}
+		m.mu.Lock()
+		metrics := runDiagnosticsJSON(m.Target)
+		m.Metrics = metrics
+		m.mu.Unlock()
+	}
+}
+
+func runDiagnosticsJSON(target string) Metrics {
+	var m Metrics
+	addr, err := net.ResolveIPAddr("ip", target)
+	if err == nil {
+		icmpConn, icmpErr := net.ListenPacket("ip4:icmp", "0.0.0.0")
+		if icmpErr == nil {
+			defer icmpConn.Close()
+			start := time.Now()
+			pkt := make([]byte, 64)
+			pkt[0] = 8
+			icmpConn.WriteTo(pkt, &net.UDPAddr{IP: addr.IP, Port: 0})
+			icmpConn.SetReadDeadline(time.Now().Add(time.Second))
+			recvBuf := make([]byte, 1500)
+			n, _, rErr := icmpConn.ReadFrom(recvBuf)
+			if rErr == nil && n >= 8 && recvBuf[0] == 0 {
+				m.Latency = time.Since(start).Seconds() * 1000.0
+			} else {
+				m.Loss = 100
+				m.IssueDetected = true
+				m.IssueSummary = "ICMP unreachable"
+			}
+		}
+	}
+	start := time.Now()
+	_, err = net.LookupIP(target)
+	m.DNS = float64(time.Since(start).Milliseconds())
+	if err != nil {
+		m.IssueDetected = true
+		m.IssueSummary += " DNS failed"
+	}
+	start = time.Now()
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:443", target), 5*time.Second)
+	m.TCP = time.Since(start).Seconds() * 1000.0
+	if err == nil {
+		conn.Close()
+	} else {
+		m.IssueDetected = true
+		m.IssueSummary += " TCP/443 failed"
+	}
+	start = time.Now()
+	url := "https://" + strings.TrimPrefix(target, "https://")
+	if strings.HasPrefix(target, "http") {
+		url = target
+	}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: defaultTransport}
+	req, _ := http.NewRequest("GET", url, nil)
+	resp, err := client.Do(req)
+	m.HTTP = time.Since(start).Seconds() * 1000.0
+	if err == nil {
+		m.DownloadSpeed = float64(resp.ContentLength)
+		resp.Body.Close()
+	} else {
+		m.IssueDetected = true
+		m.IssueSummary += " HTTP failed"
+	}
+	return m
+}
+
+func handleIndex(w http.ResponseWriter, r *http.Request, m *Monitor) {
+	templatesFS, _ := fs.Sub(webFS, templatesDir)
+	tmpl, err := template.ParseFS(templatesFS, "index.html")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	m.mu.RLock()
+	data := struct { Target string }{ Target: m.Target }
+	m.mu.RUnlock()
+	tmpl.Execute(w, data)
+}
+
+func handleAPI(w http.ResponseWriter, r *http.Request, m *Monitor) {
+	switch r.URL.Path {
+	case "/api/metrics":
+		m.mu.RLock()
+		writeJSON(m.Metrics, w)
+		m.mu.RUnlock()
+	case "/api/set-target":
+		if r.Method == "POST" {
+			var req struct{ Target string }
+			json.NewDecoder(r.Body).Decode(&req)
+			m.mu.Lock()
+			m.Target = req.Target
+			m.mu.Unlock()
+		}
+	case "/api/toggle-pause":
+		if r.Method == "POST" {
+			m.mu.Lock()
+			m.Paused = !m.Paused
+			m.mu.Unlock()
+		}
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func writeJSON(m Metrics, w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(m)
+}
+
+func handleStatic(w http.ResponseWriter, r *http.Request) {
+	staticFS, _ := fs.Sub(webFS, staticDir)
+	http.FileServer(http.FS(staticFS)).ServeHTTP(w, r)
 }
