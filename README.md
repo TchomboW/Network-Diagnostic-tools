@@ -6,7 +6,7 @@ A cross-platform network diagnostic tool suite that performs real ICMP ping, DNS
 
 ### Python (Recommended for CLI)
 
-The Python version is production-ready and uses 1000% standard library modules for maximum compatibility.
+The Python version is production-ready and uses 100% standard library modules for maximum compatibility.
 
 ```bash
 git clone https://github.com/TchomboW/Network-Diagnostic-tools.git
@@ -29,12 +29,12 @@ make build
 ./bin/network_tool --target google.com
 ```
 
-### Rust Engine
+## Rust Engine
 
 ```bash
 cd rust_engine
 cargo build --release
-./target/release/network_engine
+./target/release/network_diagnostic_engine 8.8.8.8
 ```
 
 ## Python Version
@@ -111,7 +111,8 @@ cargo build --release
 
 **Usage:**
 ```bash
-./target/release/network_engine --target example.com
+./target/release/network_diagnostic_engine 8.8.8.8
+./target/release/network_diagnostic_engine 1.1.1.1
 ```
 
 ## Web Interface

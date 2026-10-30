@@ -29,3 +29,9 @@ bin/
 
 # Go lint config
 golangci-lint.cache
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
